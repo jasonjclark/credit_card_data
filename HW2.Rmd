@@ -1,0 +1,148 @@
+---
+title: "Homework 2"
+author: "Jason Clark"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(warnings = FALSE, message = FALSE)
+```
+
+```{r}
+## Load Packages
+library(shiny)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+## Load Data
+cards=read.csv("https://raw.githubusercontent.com/jasonjclark/credit_card_data/refs/heads/main/cards.csv")%>% # Credit card fraud data
+ mutate(TransactionDate=ymd_hms(TransactionDate), # Get year and month from datetime char column
+        year=year(TransactionDate),
+        month=month(TransactionDate))%>%
+  head(25000) # Shorten dataset to avoid overcrowding the visualizations
+
+head(cards, 20)
+```
+
+```{r}
+## More Pre-Processing - determining total fraud value for each city
+fraud_data=cards %>%
+  filter(IsFraud == 1) %>% # Select only fraudulent rows
+  group_by(Location) %>%
+  summarise(TotalFraudAmount = sum(Amount)) %>% #Get the total fraud per city
+  arrange(desc(TotalFraudAmount))
+```
+
+
+```{r}
+## Plotting functions
+
+#Left side bar plot
+barPlot=function(data){
+  plot=ggplot(data, aes(x = reorder(Location, -TotalFraudAmount), y = TotalFraudAmount)) + # City on x axis, total fraud value on y
+      geom_bar(stat = "identity", fill = "steelblue") +
+      labs(x = "City", y = "Total Fraudulent Amount") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  return(plot)
+}
+
+# Right side scatter plot
+scatterPlot = function(data, city){
+   ggplot(data, aes(x = TransactionDate, y = Amount, color = as.factor(IsFraud))) + # Time on x axis, Amount of transaction on y
+      geom_point(alpha = 0.6) + # Lower opacity to see through overlap
+      facet_grid(. ~ TransactionType)+
+      labs(
+        x = "Transaction Date",
+        y = "Amount (USD)",
+        color = "Charge Type",
+        title = paste("Transactions in", city)) + # Label plot by which city is being displayed
+      scale_color_manual(values = c("0" = "dark green", "1" = "red"), labels = c("0" = "Regular", "1" = "Fraudulent")) + # color by charge type
+      scale_x_datetime(date_breaks = "2 months", date_labels = "%b %Y") + # Formalize x axis for viewing purposes
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+}
+```
+
+
+```{r}
+# UI
+ui=fluidPage(
+  titlePanel("Credit Card Fraud Analysis: 10 American Cities"),
+  h5("This interface helps users narrow and filter a massive dataset about credit card transactions including both regular and fraudulent charges. The tool is aimed to allow for quick and easy filtration when a user is curious about a city or looking to find a pattern in fraudulent charges. Selecting a city from the leftside bar plot will allow a user to see the city in more depth on the right."),
+  
+  sidebarLayout(
+    sidebarPanel( # Left side, clickable bar plot containing cities and total fraud in each
+      width = 6,
+      h3("Total Money Stolen by City"),
+      h5("Click on a bar to view a city in the scatter plot"), # Directions to user
+      plotOutput("barPlot", click = "barPlot_click")),
+    
+    mainPanel( # Right side, scatter plot of selected city, time vs amount stolen
+      width = 6,
+      selectInput( # user can select to view only fraudulent, only regular or both types of charges on scatter plot
+        "chargeType",
+        "Select Charge Type:",
+        choices = c("Fraudulent Charges" = "fraud",
+                    "Regular Charges" = "regular",
+                    "Both" = "both"),
+        selected = "both"), # Initialize with both types selected
+      plotOutput("scatterPlot"),
+      h5("Scatter plot displays transactions based on the selected charge type and city.") # user help
+    )
+  )
+)
+
+# Server
+server=function(input, output) {
+  # Reactive value to store the selected city
+  selected_city=reactiveVal("San Jose") # initialize to San Jose because it has the highest fraud
+
+ # Observe bar plot clicks
+ observeEvent(input$barPlot_click, {
+  click_info = input$barPlot_click # store click info in variable for repeated use
+  ###!! NEEDED TO USE GPT to understand barplot clicking but I believe that is okay since we are post midterm !!###
+  if (!is.null(click_info)) {             # Ensure not null to not crash the app
+    # Rounding is necessary otherwise shiny rounds the x value down always so that the range for one bar spans from it's center to the center of the next
+    city_index = round(click_info$x)  # for example 1.5 to 2.5 (the width of the 2nd bar) will scale to index 2 now
+    ## Check city index is valid and update the reactiveVal
+    if (city_index >= 1 && city_index <= nrow(fraud_data)) {
+      city = fraud_data$Location[city_index]
+      selected_city(city)
+    }
+  }
+})
+
+  # Render bar plot
+  output$barPlot=renderPlot({
+    barPlot(fraud_data) #bar plot is static meaning we can use our pre-processed data instead of a reactiveVal
+  })
+
+  # Filtering the scatterPlot data using a reactive value
+  filtered_data=reactive({
+    city_data=cards %>%
+      filter(Location == selected_city()) #Only data from city clicked on barplot
+    if (input$chargeType == "fraud") { #If user wants to see fraud, filter for only TRUE in IsFraud column
+      city_data=city_data %>% filter(IsFraud == 1)
+    } else if (input$chargeType == "regular") { #If user wants to see regular charges, filter for only FALSE in IsFraud column
+      city_data=city_data %>% filter(IsFraud == 0)
+    } #If user wants to see both fraud and regular no filtering is needed
+    city_data # Return filtered data when accessed
+  })
+
+  # Render scatter plot
+  output$scatterPlot=renderPlot({
+   scatterPlot(filtered_data(), selected_city())
+  })
+}
+
+# Run the app
+shinyApp(ui,server)
+```
+
